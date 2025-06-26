@@ -1,4 +1,4 @@
-export const API_URL = "http://localhost:8080/api";
+export const API_URL = "https://backend-connectify.up.railway.app/api";
 
 // Signup
 export async function signup({ name, email, password }) {
