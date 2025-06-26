@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
 // Backend API URL
-const API_URL = "http://localhost:8080/api";
+const API_URL = "https://backend-connectify.up.railway.app/api";
 
 export default function Login() {
   // State for form fields and UI
