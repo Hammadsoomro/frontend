@@ -2,9 +2,9 @@ import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import socket from "./socket";
 
-const API_URL = "https://backend-connectify.up.railway.app/api";
+const API_URL = "http://localhost:8080/api";
 
-// --- Helpers ---
+// Helpers
 function getAvatar(user) {
   if (user && user.name) {
     const words = user.name.trim().split(" ");
@@ -35,23 +35,11 @@ function formatTime(dateStr) {
   h = h % 12; h = h ? h : 12; m = m < 10 ? "0" + m : m;
   return `${h}:${m} ${ampm}`;
 }
-
-function getDeletedNumbers(myNumber) {
-  try {
-    return JSON.parse(localStorage.getItem(`deletedNumbers_${myNumber}`) || "[]");
-  } catch { return []; }
+function getLS(key, def = []) {
+  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(def)); }
+  catch { return def; }
 }
-function setDeletedNumbers(myNumber, arr) {
-  localStorage.setItem(`deletedNumbers_${myNumber}`, JSON.stringify(arr));
-}
-function getFolderList(name, myNumber) {
-  try {
-    return JSON.parse(localStorage.getItem(`${name}_${myNumber}`) || "[]");
-  } catch { return []; }
-}
-function setFolderList(name, myNumber, arr) {
-  localStorage.setItem(`${name}_${myNumber}`, JSON.stringify(arr));
-}
+function setLS(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
 export default function Inbox() {
   const navigate = useNavigate();
@@ -89,26 +77,26 @@ export default function Inbox() {
   const [activeFolder, setActiveFolder] = useState("inbox");
   const chatBottomRef = useRef(null);
 
-  // --- ARCHIVE, FAV, DELETED: LocalStorage synced state
+  // Folders/deleted state per-number in localStorage
   const [archived, setArchived] = useState([]);
   const [favorite, setFavorite] = useState([]);
-  const [, setDeletedLocally] = useState([]);
+  const [deletedNumbers, setDeletedNumbers] = useState([]);
 
-  function syncFolders(myNumber) {
-    setArchived(getFolderList("archived", myNumber));
-    setFavorite(getFolderList("favorite", myNumber));
-    setDeletedLocally(getDeletedNumbers(myNumber));
+  function syncFolders(num) {
+    setArchived(getLS(`archived_${num}`));
+    setFavorite(getLS(`favorite_${num}`));
+    setDeletedNumbers(getLS(`deletedNumbers_${num}`));
   }
   useEffect(() => { if (selectedMyNumber) syncFolders(selectedMyNumber); }, [selectedMyNumber]);
 
-  // --- AUTH CHECK
+  // AUTH CHECK
   useEffect(() => {
     if (!localStorage.getItem("token") || !user?.email) {
       navigate("/login");
     }
   }, [navigate, user]);
 
-  // --- GET NUMBERS ONCE
+  // GET NUMBERS ONCE
   useEffect(() => {
     async function fetchNumbers() {
       try {
@@ -127,7 +115,7 @@ export default function Inbox() {
     fetchNumbers();
   }, []);
 
-  // --- GET CONTACTS (filter deleted)
+  // GET CONTACTS (filter deleted)
   useEffect(() => {
     async function fetchContacts() {
       if (!selectedMyNumber) return;
@@ -138,7 +126,7 @@ export default function Inbox() {
         });
         const data = await res.json();
         let allContacts = data.contacts || [];
-        const deleted = getDeletedNumbers(selectedMyNumber);
+        const deleted = getLS(`deletedNumbers_${selectedMyNumber}`);
         allContacts = allContacts.filter(c => !deleted.includes(c.number));
         setContactsMap(prev => ({
           ...prev,
@@ -159,7 +147,7 @@ export default function Inbox() {
     // eslint-disable-next-line
   }, [selectedMyNumber]);
 
-  // --- GET MESSAGES FOR THIS NUMBER (auto-add unknown only if not deleted)
+  // GET MESSAGES FOR THIS NUMBER (auto-add unknown only if not deleted)
   useEffect(() => {
     if (!selectedMyNumber) return;
     async function fetchConversations() {
@@ -175,7 +163,7 @@ export default function Inbox() {
         }));
         // auto add unknown numbers to contactsMap for this myNumber
         const contacts = contactsMap[selectedMyNumber] || [];
-        const deleted = getDeletedNumbers(selectedMyNumber);
+        const deleted = getLS(`deletedNumbers_${selectedMyNumber}`);
         const nums = new Set(contacts.map(c => c.number));
         let extraContacts = [];
         (data.messages || []).forEach(m => {
@@ -213,7 +201,7 @@ export default function Inbox() {
     // eslint-disable-next-line
   }, [selectedMyNumber, contactsMap]);
 
-  // --- UNREAD COUNTS PER CONTACT PER NUMBER (ignore deleted)
+  // UNREAD COUNTS PER CONTACT PER NUMBER (ignore deleted)
   useEffect(() => {
     async function fetchAllUnreadCounts() {
       if (!selectedMyNumber || !contactsMap[selectedMyNumber] || contactsMap[selectedMyNumber].length === 0) return;
@@ -239,17 +227,11 @@ export default function Inbox() {
     // eslint-disable-next-line
   }, [contactsMap, selectedMyNumber]);
 
-  // --- SOCKET.IO: Real-time receive new messages (add to conversationMap even for unknown, but only add to contacts if not deleted)
+  // SOCKET.IO: Real-time receive new messages (add to conversationMap even for unknown, but only add to contacts if not deleted)
   useEffect(() => {
     if (!myNumbers.length || !user?.id) return;
-
     socket.emit("register", user.id);
     myNumbers.forEach(num => socket.emit("join", num));
-
-    if ("Notification" in window && Notification.permission !== "granted") {
-      Notification.requestPermission();
-    }
-
     const messageHandler = msg => {
       if (!msg || !msg.to) return;
       const myNum = myNumbers.find(num => num === msg.to);
@@ -261,7 +243,7 @@ export default function Inbox() {
       });
       // Add to contacts if not deleted
       const contacts = contactsMap[myNum] || [];
-      const deleted = getDeletedNumbers(myNum);
+      const deleted = getLS(`deletedNumbers_${myNum}`);
       if (
         msg.from !== myNum &&
         !contacts.some(c => c.number === msg.from) &&
@@ -281,16 +263,14 @@ export default function Inbox() {
         }
       }
     };
-
     socket.on("new_message", messageHandler);
-
     return () => {
       socket.off("new_message", messageHandler);
     };
     // eslint-disable-next-line
   }, [myNumbers, contactsMap, user?.id, selectedMyNumber]);
 
-  // --- Mark messages as read when chat opens
+  // Mark messages as read when chat opens
   useEffect(() => {
     if (!selectedMyNumber || !selectedContactMap[selectedMyNumber]) return;
     async function markAllAsRead() {
@@ -314,14 +294,14 @@ export default function Inbox() {
     // eslint-disable-next-line
   }, [selectedContactMap, selectedMyNumber]);
 
-  // --- SCROLL TO CHAT BOTTOM
+  // SCROLL TO CHAT BOTTOM
   useEffect(() => {
     if (chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [conversationMap, selectedMyNumber, selectedContactMap]);
 
-  // --- SEND MESSAGE
+  // SEND MESSAGE
   async function handleSend(e) {
     e.preventDefault();
     if (!msgInput.trim() || !selectedContactMap[selectedMyNumber] || !selectedMyNumber) return;
@@ -355,7 +335,7 @@ export default function Inbox() {
     setSending(false);
   }
 
-  // --- Fetch unread count for a single contact of a myNumber
+  // Fetch unread count for a single contact of a myNumber
   async function fetchUnreadCountForContact(myNum, contactNumber) {
     try {
       const token = localStorage.getItem("token");
@@ -382,13 +362,13 @@ export default function Inbox() {
     }
   }
 
-  // --- ARCHIVE/FAV (mutually exclusive, localStorage)
+  // ARCHIVE/FAV (mutually exclusive, localStorage)
   function handleArchive(contactNumber) {
-    let arr = getFolderList("archived", selectedMyNumber);
+    let arr = getLS(`archived_${selectedMyNumber}`);
     if (!arr.includes(contactNumber)) arr.push(contactNumber);
-    setFolderList("archived", selectedMyNumber, arr);
-    let favs = getFolderList("favorite", selectedMyNumber).filter(n => n !== contactNumber);
-    setFolderList("favorite", selectedMyNumber, favs);
+    setLS(`archived_${selectedMyNumber}`, arr);
+    let favs = getLS(`favorite_${selectedMyNumber}`).filter(n => n !== contactNumber);
+    setLS(`favorite_${selectedMyNumber}`, favs);
     syncFolders(selectedMyNumber);
     setSelectedContactMap(prev => ({
       ...prev,
@@ -396,25 +376,25 @@ export default function Inbox() {
     }));
   }
   function handleUnarchive(contactNumber) {
-    let arr = getFolderList("archived", selectedMyNumber).filter(n => n !== contactNumber);
-    setFolderList("archived", selectedMyNumber, arr);
+    let arr = getLS(`archived_${selectedMyNumber}`).filter(n => n !== contactNumber);
+    setLS(`archived_${selectedMyNumber}`, arr);
     syncFolders(selectedMyNumber);
   }
   function handleFavorite(contactNumber) {
-    let arr = getFolderList("favorite", selectedMyNumber);
+    let arr = getLS(`favorite_${selectedMyNumber}`);
     if (!arr.includes(contactNumber)) arr.push(contactNumber);
-    setFolderList("favorite", selectedMyNumber, arr);
-    let arch = getFolderList("archived", selectedMyNumber).filter(n => n !== contactNumber);
-    setFolderList("archived", selectedMyNumber, arch);
+    setLS(`favorite_${selectedMyNumber}`, arr);
+    let arch = getLS(`archived_${selectedMyNumber}`).filter(n => n !== contactNumber);
+    setLS(`archived_${selectedMyNumber}`, arch);
     syncFolders(selectedMyNumber);
   }
   function handleUnfavorite(contactNumber) {
-    let arr = getFolderList("favorite", selectedMyNumber).filter(n => n !== contactNumber);
-    setFolderList("favorite", selectedMyNumber, arr);
+    let arr = getLS(`favorite_${selectedMyNumber}`).filter(n => n !== contactNumber);
+    setLS(`favorite_${selectedMyNumber}`, arr);
     syncFolders(selectedMyNumber);
   }
 
-  // --- FILTERED CONTACTS (Inbox, Fav, Archive mutually exclusive)
+  // FILTERED CONTACTS (Inbox, Fav, Archive mutually exclusive)
   let contactsRaw = contactsMap[selectedMyNumber] || [];
   let filteredContacts = contactsRaw;
   if (activeFolder === "archived") {
@@ -436,13 +416,13 @@ export default function Inbox() {
       c.number.toLowerCase().includes((contactFilter || "").trim().toLowerCase())
   );
 
-  // --- CURRENT SELECTED CONTACT for this myNumber
+  // CURRENT SELECTED CONTACT for this myNumber
   const selectedContact = selectedContactMap[selectedMyNumber] || "";
   const chatMsgs = (conversationMap[selectedMyNumber] || []).filter(
     m => m.from === selectedContact || m.to === selectedContact
   );
 
-  // --- ADD CONTACT
+  // ADD CONTACT
   function openAddContact() {
     setNewContact({ name: "", number: "" });
     setAddContactErr("");
@@ -478,7 +458,7 @@ export default function Inbox() {
       } else {
         setContactsMap(prev => ({
           ...prev,
-          [selectedMyNumber]: data.contacts.filter(c => !getDeletedNumbers(selectedMyNumber).includes(c.number)) || []
+          [selectedMyNumber]: data.contacts.filter(c => !getLS(`deletedNumbers_${selectedMyNumber}`).includes(c.number)) || []
         }));
         setAddContactOpen(false);
         setSelectedContactMap(prev => ({
@@ -491,14 +471,14 @@ export default function Inbox() {
     }
   }
 
-  // --- DELETE CONTACT (update localStorage so refresh survives, don't allow recreate)
+  // DELETE CONTACT (update localStorage so refresh survives, don't allow recreate)
   async function handleDeleteContact() {
     try {
       const numToDelete = contactToDelete.number;
-      let deleted = getDeletedNumbers(selectedMyNumber);
+      let deleted = getLS(`deletedNumbers_${selectedMyNumber}`);
       if (!deleted.includes(numToDelete)) deleted.push(numToDelete);
-      setDeletedNumbers(selectedMyNumber, deleted);
-      syncFolders(selectedMyNumber); // will update state
+      setLS(`deletedNumbers_${selectedMyNumber}`, deleted);
+      syncFolders(selectedMyNumber);
       setContactsMap(prev => {
         const oldList = Array.isArray(prev[selectedMyNumber]) ? prev[selectedMyNumber] : [];
         const newList = oldList.filter(c => c.number !== numToDelete);
@@ -511,10 +491,8 @@ export default function Inbox() {
           [selectedMyNumber]: newList
         };
       });
-      // Remove from archive/fav
-      setFolderList("archived", selectedMyNumber, archived.filter(n => n !== numToDelete));
-      setFolderList("favorite", selectedMyNumber, favorite.filter(n => n !== numToDelete));
-      // Backend delete (for consistency, but ignore contact if backend returns it again)
+      setLS(`archived_${selectedMyNumber}`, archived.filter(n => n !== numToDelete));
+      setLS(`favorite_${selectedMyNumber}`, favorite.filter(n => n !== numToDelete));
       const token = localStorage.getItem("token");
       await fetch(`${API_URL}/contacts/delete`, {
         method: "POST",
