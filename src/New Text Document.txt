@@ -1,0 +1,733 @@
+ye lo frontend inbox
+
+
+import React, { useEffect, useState, useRef } from "react";
+import { useNavigate, Link } from "react-router-dom";
+
+const API_URL = "https://connectify-backend-production.up.railway.app/api";
+
+// Avatar helpers
+function getAvatar(user) {
+  if (user && user.name) {
+    const words = user.name.trim().split(" ");
+    return words.length > 1
+      ? (words[0][0] + words[1][1]).toUpperCase()
+      : words[0][0].toUpperCase();
+  }
+  if (user && user.email) return user.email[0].toUpperCase();
+  return "U";
+}
+function stringToColor(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  let color = "#";
+  for (let i = 0; i < 3; i++) {
+    color += ("00" + ((hash >> (i * 8)) & 0xff).toString(16)).slice(-2);
+  }
+  return color;
+}
+
+export default function Inbox() {
+  const navigate = useNavigate();
+
+  // THEME
+  const [theme, setTheme] = useState(() =>
+    localStorage.getItem("theme") ||
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+  );
+  useEffect(() => {
+    if (theme === "dark") document.body.classList.add("dark");
+    else document.body.classList.remove("dark");
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  // AUTH
+  const [user] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("user") || "{}"); }
+    catch { return {}; }
+  });
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // NUMBERS, CONTACTS, MESSAGES
+  const [myNumbers, setMyNumbers] = useState([]);
+  const [selectedMyNumber, setSelectedMyNumber] = useState("");
+  const [contacts, setContacts] = useState([]);
+  const [selectedContact, setSelectedContact] = useState("");
+  const [contactFilter, setContactFilter] = useState("");
+  const [conversationMap, setConversationMap] = useState({});
+  const [msgInput, setMsgInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [addContactOpen, setAddContactOpen] = useState(false);
+  const [deleteContactOpen, setDeleteContactOpen] = useState(false);
+  const [addContactErr, setAddContactErr] = useState("");
+  const [newContact, setNewContact] = useState({ name: "", number: "" });
+  const [contactToDelete, setContactToDelete] = useState(null);
+  const chatBottomRef = useRef(null);
+
+  // AUTH CHECK
+  useEffect(() => {
+    if (!localStorage.getItem("token") || !user?.email) {
+      navigate("/login");
+    }
+  }, [navigate, user]);
+
+  // GET NUMBERS
+  useEffect(() => {
+    async function fetchNumbers() {
+      try {
+        const token = localStorage.getItem("token");
+        const res = await fetch(`${API_URL}/numbers/my`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        let nums = Array.isArray(data.numbers) && data.numbers.length ? data.numbers : [];
+        setMyNumbers(nums);
+        setSelectedMyNumber(nums[0] || "");
+      } catch {
+        setMyNumbers([]);
+      }
+    }
+    fetchNumbers();
+  }, []);
+
+  // GET CONTACTS FROM BACKEND (ALWAYS PERSISTENT)
+  useEffect(() => {
+    async function fetchContacts() {
+      try {
+        const token = localStorage.getItem("token");
+        const res = await fetch(`${API_URL}/contacts`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        setContacts(data.contacts || []);
+        if (!selectedContact && (data.contacts || []).length) {
+          setSelectedContact(data.contacts[0].number);
+        }
+      } catch {
+        setContacts([]);
+      }
+    }
+    fetchContacts();
+  }, [selectedMyNumber, selectedContact]);
+
+  // GET MESSAGES FOR THIS NUMBER
+  useEffect(() => {
+    if (!selectedMyNumber) return;
+    async function fetchConversations() {
+      try {
+        const token = localStorage.getItem("token");
+        const res = await fetch(`${API_URL}/messages/${selectedMyNumber}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        setConversationMap({
+          [selectedMyNumber]: data.messages || []
+        });
+      } catch {
+        setConversationMap({ [selectedMyNumber]: [] });
+      }
+    }
+    fetchConversations();
+  }, [selectedMyNumber, contacts]);
+
+  // SCROLL TO CHAT BOTTOM
+  useEffect(() => {
+    if (chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [conversationMap, selectedMyNumber, selectedContact]);
+
+  // SEND MESSAGE
+  async function handleSend(e) {
+    e.preventDefault();
+    if (!msgInput.trim() || !selectedContact || !selectedMyNumber) return;
+    setSending(true);
+    setStatusMsg("");
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/messages/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: selectedMyNumber,
+          to: selectedContact,
+          text: msgInput.trim(),
+          token
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMsgInput("");
+        // Re-fetch messages for this number
+        const fres = await fetch(`${API_URL}/messages/${selectedMyNumber}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const fdata = await fres.json();
+        setConversationMap(map => ({ ...map, [selectedMyNumber]: fdata.messages || [] }));
+      } else {
+        setStatusMsg(data.message || "Failed to send");
+      }
+    } catch {
+      setStatusMsg("Network/server error.");
+    }
+    setSending(false);
+  }
+
+  // FILTERED CONTACTS
+  const filteredContacts = contacts.filter(
+    c =>
+      c.name.toLowerCase().includes(contactFilter.trim().toLowerCase()) ||
+      c.number.toLowerCase().includes(contactFilter.trim().toLowerCase())
+  );
+
+  // CURRENT MESSAGES
+  const chatMsgs = (conversationMap[selectedMyNumber] || []).filter(
+    m => m.from === selectedContact || m.to === selectedContact
+  );
+
+  // ADD CONTACT
+  function openAddContact() {
+    setNewContact({ name: "", number: "" });
+    setAddContactErr("");
+    setAddContactOpen(true);
+    setTimeout(() => {
+      const el = document.getElementById("contactName");
+      if (el) el.focus();
+    }, 100);
+  }
+  async function saveContact(e) {
+    e.preventDefault();
+    let { name, number } = newContact;
+    name = name.trim();
+    number = number.trim();
+    if (name.length < 2) {
+      setAddContactErr("Enter a valid name.");
+      return;
+    }
+    if (!number.match(/^\+?[0-9\s-]{7,22}$/)) {
+      setAddContactErr("Enter a valid international phone number.");
+      return;
+    }
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/contacts/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name, number })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAddContactErr(data.message || "Failed to add contact.");
+      } else {
+        setContacts(data.contacts || []);
+        setAddContactOpen(false);
+        setSelectedContact(number);
+      }
+    } catch {
+      setAddContactErr("Network/server error.");
+    }
+  }
+
+  // DELETE CONTACT
+  async function handleDeleteContact() {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/contacts/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ number: contactToDelete.number })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setContacts(data.contacts || []);
+        setSelectedContact((data.contacts || [])[0]?.number || "");
+      }
+      setDeleteContactOpen(false);
+    } catch {
+      setDeleteContactOpen(false);
+    }
+  }
+
+  // LOGOUT
+  function handleLogout() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    navigate("/login");
+  }
+
+  // KEYBOARD SHORTCUTS
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === "Escape") {
+        setAddContactOpen(false);
+        setDeleteContactOpen(false);
+        setProfileOpen(false);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
+  return (
+    <div className="inbox-bg">
+      {/* Navbar */}
+      <nav className="navbar-inbox">
+        <div className="brand">
+          <span style={{ fontSize: "1.5em", color: "#1976d2" }}>💬</span>
+          <span style={{ fontWeight: 600, marginLeft: 7 }}>Connectify</span>
+        </div>
+        <div className="navbar-actions">
+          <Link to="/buy-number" className="buy-number-link">+ Buy Number</Link>
+          <button
+            className="theme-toggle-btn"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            title="Toggle theme"
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "🌞" : "🌓"}
+          </button>
+          <div
+            className="navbar-avatar-unique"
+            style={{
+              background: stringToColor(user.name || user.email || "U"),
+              color: "#fff",
+              border: "2px solid #fff",
+              boxShadow: "0 1px 6px rgba(25,118,210,0.09)",
+              cursor: "pointer"
+            }}
+            onClick={() => setProfileOpen(v => !v)}
+            title={user.name || user.email || "Profile"}
+          >
+            {getAvatar(user)}
+          </div>
+          {profileOpen && (
+            <div className="profile-dropdown" tabIndex={-1} onBlur={() => setProfileOpen(false)}>
+              <div className="profile-details">
+                <div className="avatar-big" style={{ background: stringToColor(user.name || user.email || "U") }}>
+                  {getAvatar(user)}
+                </div>
+                <div>
+                  <div className="profile-name">{user.name || "User"}</div>
+                  <div className="profile-email">{user.email}</div>
+                </div>
+              </div>
+              <button className="logout-btn" onClick={handleLogout}>Logout</button>
+            </div>
+          )}
+        </div>
+      </nav>
+      {/* Layout */}
+      <div className="inbox-flex">
+        {/* Sidebar */}
+        <aside className="sidebar-inbox">
+          <div className="sidebar-header">
+            <span style={{ fontWeight: 600 }}>Inbox</span>
+            <button className="add-contact-btn" onClick={openAddContact}>+ Add Contact</button>
+          </div>
+          <div className="my-number-area">
+            <label htmlFor="myNumberSelect">My Number:</label>
+            <select
+              id="myNumberSelect"
+              value={selectedMyNumber}
+              onChange={e => {
+                setSelectedMyNumber(e.target.value);
+                setSelectedContact("");
+              }}
+              style={{ width: "100%" }}
+            >
+              {myNumbers.map(num => (
+                <option key={num} value={num}>{num}</option>
+              ))}
+            </select>
+          </div>
+          <input
+            className="contact-search"
+            type="text"
+            placeholder="Search contacts..."
+            value={contactFilter}
+            onChange={e => setContactFilter(e.target.value)}
+            style={{ margin: "10px 0 8px 0" }}
+          />
+          <ul className="conversation-list">
+            {filteredContacts.length === 0 && (
+              <li className="no-conv">No contacts.<br />Add contact to start chat.</li>
+            )}
+            {filteredContacts.map((contact) => (
+              <li
+                key={contact.number}
+                className={contact.number === selectedContact ? "selected" : ""}
+                onClick={() => setSelectedContact(contact.number)}
+              >
+                <span className="conv-info">{contact.name} ({contact.number})</span>
+                <button
+                  className="delete-contact-btn"
+                  title="Delete this contact"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setContactToDelete(contact);
+                    setDeleteContactOpen(true);
+                  }}
+                >🗑️</button>
+              </li>
+            ))}
+          </ul>
+        </aside>
+        {/* Chat */}
+        <main className="chat-pane-inbox">
+          <div className="chat-header-inbox">
+            <div className="chat-partner">
+              {selectedContact
+                ? (
+                  <>
+                    <b>
+                      {contacts.find(c => c.number === selectedContact)?.name || selectedContact}
+                    </b> ({selectedContact})
+                  </>
+                )
+                : "Select a contact to chat"
+              }
+            </div>
+            <div className="senderDisplay">
+              {selectedMyNumber && <>Sending as: {selectedMyNumber}</>}
+            </div>
+          </div>
+          <div className="chat-messages-inbox">
+            {selectedContact && chatMsgs.length === 0 && (
+              <div className="no-chat-msg">No messages yet</div>
+            )}
+            {selectedContact && chatMsgs.map((m, i) => (
+              <div
+                key={i}
+                className={"msg " + (m.from === selectedMyNumber ? "me" : "them")}
+              >
+                {m.text}
+              </div>
+            ))}
+            <div ref={chatBottomRef}></div>
+          </div>
+          <form className="chat-input-area-inbox" onSubmit={handleSend} autoComplete="off">
+            <input
+              type="text"
+              placeholder="Type your message..."
+              value={msgInput}
+              disabled={!selectedContact || sending}
+              onChange={e => setMsgInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && !e.shiftKey)
+                  handleSend(e);
+              }}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <button
+              type="submit"
+              className="send-btn"
+              disabled={!selectedContact || sending || !msgInput.trim()}
+              style={{ marginLeft: 7 }}
+            >
+              {sending ? "Sending..." : "Send"}
+            </button>
+          </form>
+          <div className="status-msg-inbox">{statusMsg}</div>
+        </main>
+      </div>
+      {/* Add Contact Modal */}
+      {addContactOpen && (
+        <div className="modal-inbox show">
+          <form className="modal-content-inbox" onSubmit={saveContact} autoComplete="off">
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setAddContactOpen(false)}
+              title="Close"
+            >&times;</button>
+            <div className="modal-header-inbox">
+              <span>➕</span> Add New Contact
+            </div>
+            <div className="modal-fields modal-fields-row">
+              <div style={{ flex: 1 }}>
+                <label className="modal-label" htmlFor="contactName">Full Name</label>
+                <input
+                  className="modal-input"
+                  id="contactName"
+                  name="contactName"
+                  placeholder="e.g. John Doe"
+                  maxLength={32}
+                  autoComplete="off"
+                  required
+                  value={newContact.name}
+                  onChange={e => setNewContact(nc => ({ ...nc, name: e.target.value }))}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="modal-label" htmlFor="contactNumber">Phone Number</label>
+                <input
+                  className="modal-input"
+                  id="contactNumber"
+                  name="contactNumber"
+                  placeholder="+1 415 555 0100"
+                  maxLength={22}
+                  autoComplete="off"
+                  required
+                  pattern="^\+?[0-9\s\-]+$"
+                  inputMode="tel"
+                  value={newContact.number}
+                  onChange={e => setNewContact(nc => ({ ...nc, number: e.target.value }))}
+                />
+              </div>
+            </div>
+            {addContactErr && (
+              <div className="modal-error">{addContactErr}</div>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="modal-btn cancel" onClick={() => setAddContactOpen(false)}>Cancel</button>
+              <button type="submit" className="modal-btn">Add Contact</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {/* Confirm Delete Contact Modal */}
+      {deleteContactOpen && (
+        <div className="modal-inbox show">
+          <div className="modal-content-inbox">
+            <div className="modal-header-inbox">Delete Contact</div>
+            <div style={{ marginBottom: 14 }}>
+              {contactToDelete &&
+                `Delete contact "${contactToDelete.name}" (${contactToDelete.number}) and all its chat? This cannot be undone.`}
+            </div>
+            <div className="modal-actions">
+              <button onClick={handleDeleteContact} className="modal-btn" style={{ background: "#e53935" }}>Delete</button>
+              <button onClick={() => setDeleteContactOpen(false)} className="modal-btn cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Styles */}
+      <style>{`
+        :root {
+          --bg:rgb(191, 213, 230);
+          --sidebar-bg: #f6f8fa;
+          --chat-bg:rgb(223, 204, 204);
+          --chat-header-bg: #f0f7fa;
+          --btn-bg: #1976d2;
+          --btn-color: #fff;
+          --border: #e0e0e0;
+          --input-border: #bbb;
+          --navbar-bg: #1976d2;
+          --navbar-text: #fff;
+          --navbar-height: 56px;
+          --conversation-selected: #e3f2fd;
+          --conversation-hover: #e9f5fe;
+          --delete-hover:rgb(211, 125, 125);
+          --delete-btn:rgb(218, 35, 32);
+          --delete-btn-hover:rgb(219, 6, 6);
+          --text: #222;
+        }
+        body.dark {
+          --bg: #181f28;
+          --sidebar-bg: #202837;
+          --chat-bg: #222b38;
+          --chat-header-bg: #25304a;
+          --btn-bg: #1976d2;
+          --btn-color: #fff;
+          --border: #313c4f;
+          --navbar-bg: #1a2536;
+          --navbar-text: #e0e8f4;
+          --conversation-selected: #293657;
+          --conversation-hover: #263043;
+          --delete-hover:rgb(211, 125, 125);
+          --delete-btn:rgb(218, 35, 32);
+          --delete-btn-hover:rgb(219, 6, 6);
+          --text: #e0e8f4;
+          --input-border: #444c5a;
+        }
+        .inbox-bg { min-height: 100vh; background: var(--bg); color: var(--text);}
+        .navbar-inbox { height: 56px; background: var(--navbar-bg); color: var(--navbar-text);
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 22px; font-size: 1.08em; font-weight: bold; letter-spacing: 1px;
+            box-shadow: 0 2px 8px rgba(25,118,210,0.07); position: sticky; top: 0; z-index: 100; }
+        .navbar-actions { display: flex; align-items: center; gap: 10px; }
+        .buy-number-link {
+          background: #fff;
+          color: #1976d2;
+          border-radius: 6px;
+          font-weight: 500;
+          text-decoration: none;
+          padding: 6px 13px 6px 11px;
+          font-size: 1em;
+          align-items: center;
+          box-shadow: 0 2px 8px rgba(25,118,210,0.06);
+          margin-right: 12px;
+          margin-left: 10px;
+          border: 1.2px solid #1976d2;
+          transition: background 0.17s, color 0.17s;
+        }
+        .buy-number-link:hover {
+          background: #e3f2fd;
+          color: #0f329e;
+          text-decoration: underline;
+          border-color: #1565c0;
+        }
+        .theme-toggle-btn {
+          background: none;
+          border: none;
+          font-size: 1.5em;
+          color: var(--navbar-text);
+          cursor: pointer;
+          margin-right: 8px;
+          margin-left: 8px;
+          transition: color 0.2s;
+        }
+        .navbar-avatar-unique {
+          width: 35px; height: 35px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: bold; font-size: 1.12em;
+          margin-left: 2px;
+          transition: border .13s;
+          user-select: none;
+          letter-spacing: 0.5px;
+          background: #1976d2;
+        }
+        .navbar-avatar-unique:hover { filter: brightness(1.1);}
+        .profile-dropdown {
+          position: absolute;
+          top: 56px;
+          right: 34px;
+          background: var(--card-bg, #fff);
+          box-shadow: 0 2px 18px rgba(25,118,210,0.14);
+          border-radius: 12px;
+          padding: 17px 18px 14px 18px;
+          min-width: 220px;
+          z-index: 9002;
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 10px;
+          animation: fadeIn .23s;
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-12px);}
+          to { opacity: 1; transform: none;}
+        }
+        .profile-details { display: flex; gap: 13px; align-items: center; margin-bottom: 3px;}
+        .avatar-big {
+          width: 48px; height: 48px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 1.43em; font-weight: bold; color: #fff; 
+          background: #1976d2; letter-spacing: 1.3px;
+        }
+        .profile-name { font-weight: 600; font-size: 1.11em; margin-bottom: 0; }
+        .profile-email { font-size: 0.98em; color: #888; }
+        .logout-btn {
+          margin-top: 7px;
+          background: #e53935;
+          color: #fff;
+          border: none;
+          border-radius: 6px;
+          font-size: 1em;
+          font-weight: bold;
+          padding: 10px 0;
+          cursor: pointer;
+          letter-spacing: 0.5px;
+          transition: background 0.19s;
+        }
+        .logout-btn:hover { background: #b71c1c; }
+        .inbox-flex { display: flex; height: calc(100vh - 56px);}
+        .sidebar-inbox {
+          width: 270px; background: var(--sidebar-bg); border-right: 1px solid var(--border);
+          display: flex; flex-direction: column; min-width: 160px; max-width: 97vw; height: 100%; color: var(--text);
+        }
+        .sidebar-header {
+          padding: 14px 14px 6px 14px;
+          font-weight: bold;
+          font-size: 1.08em;
+          display: flex; justify-content: space-between; align-items: center;
+        }
+        .add-contact-btn {
+          background: var(--btn-bg);
+          color: var(--btn-color);
+          border: none;
+          border-radius: 4px;
+          padding: 7px 12px;
+          cursor: pointer;
+          font-size: 0.96em;
+        }
+        .my-number-area { padding: 0 14px 0 14px;}
+        .my-number-area label { font-size: 0.97em; font-weight: 500; color: var(--text);}
+        .contact-search { margin: 8px 12px 0 12px; padding: 7px 10px; border-radius: 5px; border: 1.1px solid var(--input-border);}
+        .conversation-list {
+          flex: 1 1 0;
+          min-height: 0;
+          max-height: 100%;
+          overflow-y: auto;
+          margin: 0;
+          padding: 0 0 0 0;
+          list-style: none;
+          background: var(--sidebar-bg);
+          color: var(--text);
+          user-select: none;
+        }
+        .conversation-list li {
+          padding: 11px 0 11px 18px;
+          border-bottom: 1px solid var(--border);
+          cursor: pointer;
+          font-size: 1em;
+          transition: background 0.14s;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          position: relative;
+          color: var(--text);
+          user-select: none;
+        }
+        .conversation-list li.selected {
+          background: var(--conversation-selected);
+          font-weight: bold;
+        }
+        .conversation-list li:hover {
+          background: var(--conversation-hover);
+        }
+        .conv-info { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); pointer-events: none; user-select: none;}
+        .delete-contact-btn {display: none; background: none; border: none; color: var(--delete-btn); font-size: 1.18em; margin-right: 14px; cursor: pointer; padding: 7px 5px 7px 5px; border-radius: 50%; transition: background 0.12s, color 0.16s;}
+        .conversation-list li:hover .delete-contact-btn { display: inline-block;}
+        .delete-contact-btn:hover { background: var(--delete-hover); color: var(--delete-btn-hover);}
+        .no-conv { color: #aaa; text-align: center; margin: 24px 0; font-size: 0.99em;}
+        .chat-pane-inbox { flex: 1; display: flex; flex-direction: column; background: var(--chat-bg); min-width: 0; color: var(--text);}
+        .chat-header-inbox { padding: 16px 16px 10px 18px; background: var(--chat-header-bg); border-bottom: 1px solid var(--border); font-weight: bold; min-height: 40px; display: flex; align-items: center; justify-content: space-between; font-size: 1.08em;}
+        .senderDisplay { font-size: 0.99em; color: #1976d2; font-weight: 500;}
+        .chat-messages-inbox { flex: 1; overflow-y: auto; padding: 18px 18px 10px 18px; background: var(--chat-bg); display: flex; flex-direction: column; gap: 8px; min-height: 0; color: var(--text);}
+        .msg { max-width: 62%; padding: 10px 16px; border-radius: 18px; font-size: 1em; word-break: break-word; display: inline-block; color: var(--text);}
+        .me   { align-self: flex-end; background: #e3f2fd; color: #1976d2; text-align: right;}
+        .them { align-self: flex-start; background: #f1f8e9; color: #388e3c; text-align: left;}
+        .no-chat-msg { color: #aaa; text-align: center; margin: 42px 0 0 0;}
+        .chat-input-area-inbox { display: flex; border-top: 1px solid var(--border); background: #fafbfc; padding: 12px 10px 12px 10px; gap: 6px;}
+        .chat-input-area-inbox input[type="text"] { flex: 1; padding: 9px 10px; border-radius: 5px; border: 1.1px solid var(--input-border); font-size: 1em; background: var(--chat-bg); color: var(--text); transition: background 0.2s, color 0.2s, border-color 0.2s;}
+        .send-btn { padding: 9px 22px; background: var(--btn-bg); color: var(--btn-color); border: none; border-radius: 5px; font-weight: 600; cursor: pointer; font-size: 1em;}
+        .status-msg-inbox { color: #e53935; font-size: 0.99em; min-height: 18px; text-align: center; margin-top: 3px;}
+        .modal-inbox { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(35,45,60,0.16); align-items: center; justify-content: center; z-index: 9999; animation: modal-bg-fadein 0.23s;}
+        .modal-inbox.show { display: flex; }
+        @keyframes modal-bg-fadein { from { background: rgba(35,45,60, 0); } to   { background: rgba(35,45,60, 0.16);} }
+        .modal-content-inbox { background: var(--card-bg); padding: 28px 20px 18px 20px; border-radius: 15px; min-width: 300px; max-width: 98vw; box-shadow: 0 4px 24px 0 rgba(25, 118, 210, 0.18); display: flex; flex-direction: column; color: var(--text); position: relative; animation: modal-slidein 0.27s cubic-bezier(.55,1.33,.58,1.05);}
+        @keyframes modal-slidein { from { transform: translateY(60px) scale(.95); opacity: 0;} to   { transform: translateY(0) scale(1); opacity: 1;}}
+        .modal-header-inbox { color: #1976d2; font-size: 1.13em; font-weight: bold; letter-spacing: .5px; margin-bottom: 8px; display: flex; align-items: center; gap: 7px;}
+        .modal-fields { display: flex; flex-direction: column; gap: 0; margin-bottom: 7px; margin-top: 6px;}
+        .modal-fields-row { flex-direction: row; gap: 16px;}
+        @media (max-width: 600px) { .modal-fields-row { flex-direction: column; gap: 4px;} }
+        .modal-label { font-size: 0.98em; color: #444e5f; margin-bottom: 4px; font-weight: 500; letter-spacing: .1px;}
+        .modal-input { padding: 9px 10px; border-radius: 6px; border: 1.1px solid var(--input-border); font-size: 1.02em; background: var(--sidebar-bg); color: var(--text); outline: none; transition: border .18s;}
+        .modal-input:focus { border-color: var(--btn-bg);}
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px;}
+        .modal-btn { background: var(--btn-bg); color: #fff; border: none; border-radius: 5px; padding: 8px 20px; font-size: 1.05em; font-weight: 500; cursor: pointer; transition: background .15s, color .15s; box-shadow: 0 1px 4px rgba(25,118,210,0.06);}
+        .modal-btn.cancel { background: #e5eaf3; color: #1976d2;}
+        .modal-btn.cancel:hover { background: #e3f2fd; color: #1351a0;}
+        .modal-btn:active { transform: scale(.97);}
+        .modal-close { position: absolute; top: 13px; right: 13px; background: none; border: none; font-size: 1.19em; color: #b0b8c9; cursor: pointer; transition: color .13s; border-radius: 2px;}
+        .modal-close:hover { color: #e53935;}
+        .modal-error { color: #e53935; font-size: 0.97em; margin-bottom: 5px; margin-top: -8px; font-weight: 500;}
+        @media (max-width: 600px) { .sidebar-inbox { min-width: 0; width: 100vw; max-width: 200px;} .inbox-flex { flex-direction: column;} .chat-pane-inbox { min-width: 0; } }
+      `}</style>
+    </div>
+  );
+}
