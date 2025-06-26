@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import socket from "./socket";
 
-const API_URL = "http://localhost:8080/api";
+const API_URL = "https://backend-connectify.up.railway.app/api";
 
 // Helpers
 function getAvatar(user) {
